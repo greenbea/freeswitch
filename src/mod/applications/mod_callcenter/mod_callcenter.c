@@ -2910,8 +2910,7 @@ void *SWITCH_THREAD_FUNC cc_member_thread_run(switch_thread_t *thread, void *obj
 		if (switch_channel_get_private(member_channel, queue->announce)) {
 		    last_announce = time_now;
 		}
-
-		if (announce_valid == SWITCH_TRUE && queue->announce && queue->announce_freq > 0 &&
+		else if (announce_valid == SWITCH_TRUE && queue->announce && queue->announce_freq > 0 &&
 			queue->announce_freq <= time_now - last_announce) {
 			switch_status_t status = SWITCH_STATUS_FALSE;
 
