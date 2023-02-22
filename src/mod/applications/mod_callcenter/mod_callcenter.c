@@ -2011,9 +2011,7 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			switch_channel_set_variable(member_channel, "cc_agent_bridged", "true");
 			switch_channel_set_variable(agent_channel, "cc_agent_bridged", "true");
 			switch_channel_set_variable(member_channel, "cc_agent_uuid", agent_uuid);
-		}
 
-		if (bridged) {
 			/* for xml_cdr needs */
 			switch_channel_set_variable(member_channel, "cc_agent", h->agent_name);
 			switch_channel_set_variable_printf(member_channel, "cc_queue_answered_epoch", "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
@@ -2995,7 +2993,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 	long abandoned_epoch = 0;
 	switch_uuid_t smember_uuid;
 	char member_uuid[SWITCH_UUID_FORMATTED_LENGTH + 1] = "";
-	switch_bool_t agent_found = SWITCH_FALSE;
+	switch_bool_t agent_bridged = SWITCH_FALSE;
 	switch_bool_t moh_valid = SWITCH_TRUE;
 	const char *p;
 
@@ -3179,7 +3177,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 		args.buflen = sizeof(h);
 
 		/* An agent was found, time to exit and let the bridge do it job */
-		if ((p = switch_channel_get_variable(member_channel, "cc_agent_found")) && (agent_found = switch_true(p))) {
+		if ((p = switch_channel_get_variable(member_channel, "cc_agent_bridged")) && (agent_bridged = switch_true(p))) {
 			break;
 		}
 		/* If the member thread set a different reason, we monitor it so we can quit the wait */
@@ -3201,8 +3199,6 @@ SWITCH_STANDARD_APP(callcenter_function)
 				switch_channel_set_variable(member_channel, "cc_exit_key", buf);
 				h->member_cancel_reason = CC_MEMBER_CANCEL_REASON_EXIT_WITH_KEY;
 				break;
-			} else if (!SWITCH_READ_ACCEPTABLE(status)) {
-				break;
 			}
 		} else {
 			switch_status_t status = switch_ivr_collect_digits_callback(member_session, &args, 0, 0);
@@ -3220,9 +3216,9 @@ SWITCH_STANDARD_APP(callcenter_function)
 		switch_safe_free(moh_expanded);
 	}
 
-	/* Make sure an agent was found, as we might break above without setting it */
-	if (!agent_found && (p = switch_channel_get_variable(member_channel, "cc_agent_found"))) {
-		agent_found = switch_true(p);
+	/* Make sure an agent was bridged, as we might break above without setting it */
+	if (!agent_bridged && (p = switch_channel_get_variable(member_channel, "cc_agent_bridged"))) {
+		agent_bridged = switch_true(p);
 	}
 
 	/* Stop member thread and announcement*/
@@ -3235,7 +3231,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 	}
 
 	/* Check if we were removed because FS Core(BREAK) asked us to */
-	if (h->member_cancel_reason == CC_MEMBER_CANCEL_REASON_NONE && !agent_found) {
+	if (h->member_cancel_reason == CC_MEMBER_CANCEL_REASON_NONE && !agent_bridged) {
 		h->member_cancel_reason = CC_MEMBER_CANCEL_REASON_BREAK_OUT;
 	}
 
