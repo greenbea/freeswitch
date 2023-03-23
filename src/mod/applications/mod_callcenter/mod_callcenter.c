@@ -446,6 +446,7 @@ struct cc_queue {
 
 	char *strategy;
 	char *moh;
+	char *greeting;
 	char *announce;
 	uint32_t announce_freq;
 	char *record_template;
@@ -562,6 +563,7 @@ cc_queue_t *queue_set_config(cc_queue_t *queue)
 	 */
 	SWITCH_CONFIG_SET_ITEM(queue->config[i++], "strategy", SWITCH_CONFIG_STRING, 0, &queue->strategy, "longest-idle-agent", &queue->config_str_pool, NULL, NULL);
 	SWITCH_CONFIG_SET_ITEM(queue->config[i++], "moh-sound", SWITCH_CONFIG_STRING, 0, &queue->moh, NULL, &queue->config_str_pool, NULL, NULL);
+	SWITCH_CONFIG_SET_ITEM(queue->config[i++], "greeting-sound", SWITCH_CONFIG_STRING, 0, &queue->greeting, NULL, &queue->config_str_pool, NULL, NULL);
 	SWITCH_CONFIG_SET_ITEM(queue->config[i++], "announce-sound", SWITCH_CONFIG_STRING, 0, &queue->announce, NULL, &queue->config_str_pool, NULL, NULL);
 	SWITCH_CONFIG_SET_ITEM(queue->config[i++], "announce-frequency", SWITCH_CONFIG_INT, 0, &queue->announce_freq, 0, &config_int_0_86400, NULL, NULL);
 	SWITCH_CONFIG_SET_ITEM(queue->config[i++], "record-template", SWITCH_CONFIG_STRING, 0, &queue->record_template, NULL, &queue->config_str_pool, NULL, NULL);
@@ -2832,6 +2834,8 @@ void *SWITCH_THREAD_FUNC cc_member_thread_run(switch_thread_t *thread, void *obj
 	switch_channel_t *member_channel = NULL;
 	switch_time_t last_announce = local_epoch_time_now(NULL);
 	switch_bool_t announce_valid = SWITCH_TRUE;
+	switch_bool_t playing_greeting = SWITCH_FALSE;
+	switch_bool_t played_greeting = SWITCH_FALSE;
 
 	if (member_session) {
 		member_channel = switch_core_session_get_channel(member_session);
@@ -2905,9 +2909,25 @@ void *SWITCH_THREAD_FUNC cc_member_thread_run(switch_thread_t *thread, void *obj
 		   }
 		 */
 
+		if (queue->greeting && !played_greeting) {
+			if (playing_greeting) {
+				if (!switch_channel_get_private(member_channel, queue->greeting)) {
+					playing_greeting = SWITCH_FALSE;
+					played_greeting = SWITCH_TRUE;
+					last_announce = time_now;
+				}
+			} else {
+				if (switch_ivr_displace_session(member_session, queue->greeting, 0, NULL) != SWITCH_STATUS_SUCCESS) {
+					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_WARNING, "Couldn't play queue greeting '%s'\n", queue->greeting);
+				} else {
+					playing_greeting = SWITCH_TRUE;
+				}
+			}
+		}
+
 		/* If Agent Logoff, we might need to recalculare score based on skill */
 		/* Play the periodic announcement if it is time to do so */
-		if (queue->announce && announce_valid) {
+		if (queue->announce && announce_valid && !playing_greeting) {
 			/* still in middle of playing */
 			if (switch_channel_get_private(member_channel, queue->announce)) {
 				last_announce = time_now;
@@ -3235,9 +3255,14 @@ SWITCH_STANDARD_APP(callcenter_function)
 		h->running = 0;
 	}
 
+	if (queue->greeting) {
+		switch_ivr_stop_displace_session(member_session, queue->greeting);
+	}
+
 	if (queue_announce) {
 		switch_ivr_stop_displace_session(member_session, queue_announce);
 	}
+
 	/* in the case queue was reloaded */
 	if ((queue = get_queue(queue_name)) && queue->announce && switch_channel_get_private(member_channel, queue->announce)) {
 		switch_ivr_stop_displace_session(member_session, queue->announce);
