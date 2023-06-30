@@ -2894,7 +2894,7 @@ void *SWITCH_THREAD_FUNC cc_member_thread_run(switch_thread_t *thread, void *obj
 			if (queue->last_agent_exist_check - queue->last_agent_exist >= queue->max_wait_time_with_no_agent) {
 				/* Check for grace period with no agent when member join */
 				if (queue->max_wait_time_with_no_agent_time_reached > 0) {
-					/* Check if the last agent check was after the member join, and we waited atless the extra time  */
+					/* Check if the last agent check was after the member joined or rejoined, and we waited atless the extra time  */
 					if (queue->last_agent_exist_check - m->t_member_called >= queue->max_wait_time_with_no_agent_time_reached + queue->max_wait_time_with_no_agent) {
 						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Member %s <%s> in queue '%s' reached max wait of %d sec. with no agent plus join grace period of %d sec.\n", m->member_cid_name, m->member_cid_number, m->queue_name, queue->max_wait_time_with_no_agent, queue->max_wait_time_with_no_agent_time_reached);
 						m->member_cancel_reason = CC_MEMBER_CANCEL_REASON_NO_AGENT_TIMEOUT;
@@ -3025,6 +3025,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 	char start_epoch[64];
 	switch_event_t *event;
 	switch_time_t t_member_called = local_epoch_time_now(NULL);
+	switch_time_t joined_epoch = local_epoch_time_now(NULL);
 	long abandoned_epoch = 0;
 	switch_uuid_t smember_uuid;
 	char member_uuid[SWITCH_UUID_FORMATTED_LENGTH + 1] = "";
@@ -3085,44 +3086,32 @@ SWITCH_STANDARD_APP(callcenter_function)
 
 	switch_channel_set_variable(member_channel, "cc_side", "member");
 	switch_channel_set_variable(member_channel, "cc_member_uuid", member_uuid);
+	switch_channel_set_variable(member_channel, "cc_queue", queue_name);
 
 	/* Clear flags in case previously set */
 	switch_channel_set_variable(member_channel, "cc_agent_found", NULL);
 	switch_channel_set_variable(member_channel, "cc_agent_bridged", NULL);
 
-	/* Add manually imported score */
-	if (cc_base_score) {
-		cc_base_score_int += atoi(cc_base_score);
-	}
-
-	/* If system, will add the total time the session is up to the base score */
-	if (!switch_strlen_zero(start_epoch) && !strcasecmp("system", queue->time_base_score)) {
-		cc_base_score_int += ((long) local_epoch_time_now(NULL) - atol(start_epoch));
-	}
-
-	/* for xml_cdr needs */
-	switch_channel_set_variable_printf(member_channel, "cc_queue_joined_epoch", "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
-	switch_channel_set_variable(member_channel, "cc_queue", queue_name);
-
 	/* We have a previous abandoned user, let's try to recover his place */
 	if (abandoned_epoch > 0) {
 		char res[256];
 
+		switch_channel_set_variable_printf(member_channel, "cc_queue_rejoined_epoch", "%" SWITCH_TIME_T_FMT, t_member_called);
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Member %s <%s> restoring it previous position in queue %s\n", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_name")), switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")), queue_name);
 
 		/* Update abandoned member */
 		sql = switch_mprintf("UPDATE members SET session_uuid = '%q', state = '%q', rejoined_epoch = '%" SWITCH_TIME_T_FMT "', instance_id = '%q' WHERE uuid = '%q' AND state = '%q'",
-				member_session_uuid, cc_member_state2str(CC_MEMBER_STATE_WAITING), local_epoch_time_now(NULL), globals.cc_instance_id, member_uuid, cc_member_state2str(CC_MEMBER_STATE_ABANDONED));
+				member_session_uuid, cc_member_state2str(CC_MEMBER_STATE_WAITING), t_member_called, globals.cc_instance_id, member_uuid, cc_member_state2str(CC_MEMBER_STATE_ABANDONED));
 		cc_execute_sql(queue, sql, NULL);
 		switch_safe_free(sql);
 
 		/* Confirm we took that member in */
-		sql = switch_mprintf("SELECT abandoned_epoch FROM members WHERE uuid = '%q' AND session_uuid = '%q' AND state = '%q' AND queue = '%q'", member_uuid, member_session_uuid, cc_member_state2str(CC_MEMBER_STATE_WAITING), queue_name);
+		sql = switch_mprintf("SELECT joined_epoch FROM members WHERE uuid = '%q' AND session_uuid = '%q' AND state = '%q' AND queue = '%q'", member_uuid, member_session_uuid, cc_member_state2str(CC_MEMBER_STATE_WAITING), queue_name);
 		cc_execute_sql2str(NULL, NULL, sql, res, sizeof(res));
 		switch_safe_free(sql);
-		abandoned_epoch = atol(res);
+		joined_epoch = atol(res);
 
-		if (abandoned_epoch == 0) {
+		if (joined_epoch == 0) {
 			/* Failed to get the member !!! */
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_ERROR, "Member %s <%s> restoring action failed in queue %s, joining again\n", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_name")), switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")), queue_name);
 			//queue_rwunlock(queue);
@@ -3130,22 +3119,21 @@ SWITCH_STANDARD_APP(callcenter_function)
 
 		}
 
-	}
-
-	if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, CALLCENTER_EVENT) == SWITCH_STATUS_SUCCESS) {
-		switch_channel_event_set_data(member_channel, event);
-		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Queue", queue_name);
-		switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Action", "member-queue-%s", (abandoned_epoch==0?"start":"resume"));
-		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-UUID", member_uuid);
-		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-Session-UUID", member_session_uuid);
-		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-CID-Name", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_name")));
-		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-CID-Number", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")));
-		switch_event_fire(&event);
-	}
-
-
-	if (abandoned_epoch == 0) {
+	} else {
 		char *strategy_str = NULL;
+
+		switch_channel_set_variable_printf(member_channel, "cc_queue_joined_epoch", "%" SWITCH_TIME_T_FMT, joined_epoch);
+
+		/* Add manually imported score */
+		if (cc_base_score) {
+			cc_base_score_int += atoi(cc_base_score);
+		}
+
+		/* If system, will add the total time the session is up to the base score */
+		if (!switch_strlen_zero(start_epoch) && !strcasecmp("system", queue->time_base_score)) {
+			cc_base_score_int += ((long) local_epoch_time_now(NULL) - atol(start_epoch));
+		}
+
 		/* Add the caller to the member queue */
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Member %s <%s> joining queue %s\n", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_name")), switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")), queue_name);
 
@@ -3164,7 +3152,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 				member_uuid,
 				member_session_uuid,
 				start_epoch,
-				local_epoch_time_now(NULL),
+				joined_epoch,
 				cc_base_score_int,
 				0 /*TODO SKILL score*/,
 				switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")),
@@ -3173,6 +3161,21 @@ SWITCH_STANDARD_APP(callcenter_function)
 				cc_member_state2str(CC_MEMBER_STATE_WAITING));
 		cc_execute_sql(queue, sql, NULL);
 		switch_safe_free(sql);
+	}
+
+	if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, CALLCENTER_EVENT) == SWITCH_STATUS_SUCCESS) {
+		switch_channel_event_set_data(member_channel, event);
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Queue", queue_name);
+		switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Action", "member-queue-%s", (abandoned_epoch==0?"start":"resume"));
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-UUID", member_uuid);
+		switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Member-Joined-Time", "%" SWITCH_TIME_T_FMT, joined_epoch);
+		if (abandoned_epoch > 0) {
+			switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Member-Rejoined-Time", "%" SWITCH_TIME_T_FMT, t_member_called);
+		}
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-Session-UUID", member_session_uuid);
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-CID-Name", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_name")));
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-CID-Number", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")));
+		switch_event_fire(&event);
 	}
 
 	/* Send Event with queue count */
@@ -3316,7 +3319,10 @@ SWITCH_STANDARD_APP(callcenter_function)
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Queue", queue_name);
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Action", "member-queue-end");
 			switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Member-Leaving-Time", "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
-			switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Member-Joined-Time", "%" SWITCH_TIME_T_FMT, t_member_called);
+			switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Member-Joined-Time", "%" SWITCH_TIME_T_FMT, joined_epoch);
+			if (abandoned_epoch > 0) {
+				switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Member-Rejoined-Time", "%" SWITCH_TIME_T_FMT, t_member_called);
+			}
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Cause", "Cancel");
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Cancel-Reason", cc_member_cancel_reason2str(h->member_cancel_reason));
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Member-UUID", member_uuid);
