@@ -485,7 +485,7 @@ struct cc_queue {
 };
 typedef struct cc_queue cc_queue_t;
 
-static void cc_send_presence(const char *queue_name);
+static void cc_send_presence(const char *queue_name, const char *call_id);
 
 static void free_queue(cc_queue_t *queue)
 {
@@ -3186,7 +3186,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 
 	/* Send Event with queue count */
 	cc_queue_count(queue_name);
-	cc_send_presence(queue_name);
+	cc_send_presence(queue_name, NULL);
 
 	/* Start Thread that will playback different prompt to the channel */
 	switch_core_new_memory_pool(&pool);
@@ -3366,7 +3366,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 
 	/* Send Event with queue count */
 	cc_queue_count(queue_name);
-	cc_send_presence(queue_name);
+	cc_send_presence(queue_name, NULL);
 
 end:
 
@@ -3430,7 +3430,7 @@ SWITCH_STANDARD_APP(callcenter_track)
 	return;
 }
 
-static void cc_send_presence(const char *queue_name) {
+static void cc_send_presence(const char *queue_name, const char *call_id) {
 	char *sql;
 	char res[256] = "";
 	int count = 0;
@@ -3461,6 +3461,9 @@ static void cc_send_presence(const char *queue_name) {
 		switch_event_add_header_string(send_event, SWITCH_STACK_BOTTOM, "unique-id", queue_name);
 		switch_event_add_header_string(send_event, SWITCH_STACK_BOTTOM, "answer-state", count > 0 ? "confirmed" : "terminated");
 		switch_event_add_header_string(send_event, SWITCH_STACK_BOTTOM, "presence-call-direction", "inbound");
+		if (call_id) {
+			switch_event_add_header_string(send_event, SWITCH_STACK_BOTTOM, "call-id", call_id);
+		}
 		switch_event_fire(&send_event);
 
 	} else {
@@ -3471,6 +3474,7 @@ static void cc_send_presence(const char *queue_name) {
 
 static void cc_presence_event_handler(switch_event_t *event) {
 	char *to = switch_event_get_header(event, "to");
+	const char *call_id = switch_event_get_header(event, "sub-call-id");
 	char *dup_to = NULL, *queue_name;
 	cc_queue_t *queue;
 
@@ -3492,7 +3496,7 @@ static void cc_presence_event_handler(switch_event_t *event) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Queue not found, exit!\n");
 		return;
 	}
-	cc_send_presence(queue_name);
+	cc_send_presence(queue_name, call_id);
 	queue_rwunlock(queue);
 	switch_safe_free(dup_to);
 	return;
