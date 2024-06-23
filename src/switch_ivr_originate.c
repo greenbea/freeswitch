@@ -2137,6 +2137,24 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 		}
 	}
 
+	if (!ovars && switch_event_create_plain(&ovars, SWITCH_EVENT_CHANNEL_DATA) != SWITCH_STATUS_SUCCESS) {
+		abort();
+	}
+
+	/** origination_id sets the same id on all legs originated from the same origination */
+	if (!switch_event_get_header(ovars, "origination_id")) {
+		char uuid_str[SWITCH_UUID_FORMATTED_LENGTH + 1];
+
+		switch_uuid_str(uuid_str, sizeof(uuid_str));
+		switch_event_add_header_string(ovars, SWITCH_STACK_BOTTOM, "origination_id", uuid_str);
+
+		/** a session might originate more than once in its lifetime, so we only set it on the current profile */
+		if (session) {
+			switch_channel_set_variable(caller_channel, "last_origination_id", uuid_str);
+			switch_channel_set_profile_var(caller_channel, "local:origination_id", uuid_str);
+		}
+	}
+
 
 	if (strstr(bridgeto, SWITCH_ENT_ORIGINATE_DELIM)) {
 		return switch_ivr_enterprise_originate(session, bleg, cause, bridgeto, timelimit_sec, table, cid_name_override, cid_num_override,
