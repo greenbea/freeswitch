@@ -837,6 +837,7 @@ struct call_helper {
 	const char *queue_name;
 	const char *queue_strategy;
 	const char *member_joined_epoch;
+	const char *member_rejoined_epoch;
 	const char *member_cid_name;
 	const char *member_cid_number;
 	const char *agent_name;
@@ -1763,6 +1764,9 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 		switch_event_create(&ovars, SWITCH_EVENT_REQUEST_PARAMS);
 		switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "cc_queue", "%s", h->queue_name);
 		switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "cc_queue_joined_epoch", "%s", h->member_joined_epoch);
+		if (atoi(h->member_rejoined_epoch) > 0) {
+			switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "cc_queue_rejoined_epoch", "%s", h->member_rejoined_epoch);
+		}
 		switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "cc_member_uuid", "%s", h->member_uuid);
 		switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "cc_member_session_uuid", "%s", h->member_session_uuid);
 		switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "cc_member_pre_answer_uuid", "%s", h->member_uuid);
@@ -1998,6 +2002,7 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 										   h->member_cid_name, h->member_cid_number, h->agent_name);
 			switch_channel_set_variable(agent_channel, "cc_agent_bridged", "false");
 			switch_channel_set_variable(member_channel, "cc_agent_bridged", "false");
+			switch_channel_set_profile_var(member_channel, "local:cc_agent_bridged", "false");
 
 			/* Set member to Abandoned state, previous Trying */
 			sql = switch_mprintf("UPDATE members SET state = '%q', session_uuid = '', abandoned_epoch = '%" SWITCH_TIME_T_FMT "' WHERE uuid = '%q' AND instance_id = '%q'",
@@ -2026,6 +2031,7 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 
 			switch_channel_set_variable(member_channel, "cc_agent_bridged", "true");
 			switch_channel_set_variable(agent_channel, "cc_agent_bridged", "true");
+			switch_channel_set_profile_var(member_channel, "local:cc_agent_bridged", "true");
 
 			/* Update member to Answered state, previous Trying */
 			sql = switch_mprintf("UPDATE members SET state = '%q', bridge_epoch = '%" SWITCH_TIME_T_FMT "' WHERE uuid = '%q' AND instance_id = '%q'",
@@ -2035,9 +2041,13 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 		}
 
 		if (bridged) {
+			char *cc_queue_answered_epoch = switch_core_session_sprintf(member_session, "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
+
 			/* for xml_cdr needs */
 			switch_channel_set_variable(member_channel, "cc_agent", h->agent_name);
-			switch_channel_set_variable_printf(member_channel, "cc_queue_answered_epoch", "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
+			switch_channel_set_variable_printf(member_channel, "cc_queue_answered_epoch", cc_queue_answered_epoch);
+			switch_channel_set_profile_var(member_channel, "local:cc_agent", h->agent_name);
+			switch_channel_set_profile_var(member_channel, "local:cc_queue_answered_epoch", cc_queue_answered_epoch);
 			/* Set UUID of the Agent channel */
 			sql = switch_mprintf("UPDATE agents SET uuid = '%q', last_bridge_start = '%" SWITCH_TIME_T_FMT "', calls_answered = calls_answered + 1, no_answer_count = 0"
 										 " WHERE name = '%q' AND instance_id = '%q'",
@@ -2263,6 +2273,7 @@ struct agent_callback {
 	const char *member_cid_number;
 	const char *member_cid_name;
 	const char *member_joined_epoch;
+	const char *member_rejoined_epoch;
 	const char *member_score;
 	const char *member_system;
 	const char *strategy;
@@ -2421,6 +2432,7 @@ static int agents_callback(void *pArg, int argc, char **argv, char **columnNames
 				h->agent_type = switch_core_strdup(h->pool, agent_type);
 				h->agent_uuid = switch_core_strdup(h->pool, agent_uuid);
 				h->member_joined_epoch = switch_core_strdup(h->pool, cbt->member_joined_epoch);
+				h->member_rejoined_epoch = switch_core_strdup(h->pool, cbt->member_rejoined_epoch);
 				h->member_cid_name = switch_core_strdup(h->pool, cbt->member_cid_name);
 				h->member_cid_number = switch_core_strdup(h->pool, cbt->member_cid_number);
 				h->queue_name = switch_core_strdup(h->pool, cbt->queue_name);
@@ -2508,6 +2520,7 @@ static int members_callback(void *pArg, int argc, char **argv, char **columnName
 	member_abandoned_epoch = argv[8];
 	serving_agent = argv[9];
 	cbt.member_system = argv[10];
+	cbt.member_rejoined_epoch = argv[11];
 
 	if (!cbt.queue_name || !(queue = get_queue(cbt.queue_name))) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Queue %s not found locally, delete this member\n", cbt.queue_name);
@@ -2786,7 +2799,7 @@ void *SWITCH_THREAD_FUNC cc_agent_dispatch_thread_run(switch_thread_t *thread, v
 
 	while (globals.running == 1) {
 		char *sql = NULL;
-		sql = switch_mprintf("SELECT queue,uuid,session_uuid,cid_number,cid_name,joined_epoch,(%" SWITCH_TIME_T_FMT "-joined_epoch)+base_score+skill_score AS score, state, abandoned_epoch, serving_agent, instance_id FROM members"
+		sql = switch_mprintf("SELECT queue,uuid,session_uuid,cid_number,cid_name,joined_epoch,(%" SWITCH_TIME_T_FMT "-joined_epoch)+base_score+skill_score AS score, state, abandoned_epoch, serving_agent, instance_id, rejoined_epoch FROM members"
 				" WHERE (state = '%q' OR state = '%q' OR (serving_agent = 'ring-all' AND state = '%q') OR (serving_agent = 'ring-progressively' AND state = '%q')) AND instance_id = '%q' ORDER BY score DESC",
 				local_epoch_time_now(NULL),
 				cc_member_state2str(CC_MEMBER_STATE_WAITING), cc_member_state2str(CC_MEMBER_STATE_ABANDONED), cc_member_state2str(CC_MEMBER_STATE_TRYING), cc_member_state2str(CC_MEMBER_STATE_TRYING), globals.cc_instance_id);
@@ -3093,6 +3106,9 @@ SWITCH_STANDARD_APP(callcenter_function)
 	switch_channel_set_variable(member_channel, "cc_side", "member");
 	switch_channel_set_variable(member_channel, "cc_member_uuid", member_uuid);
 	switch_channel_set_variable(member_channel, "cc_queue", queue_name);
+	switch_channel_set_profile_var(member_channel, "local:cc_side", "member");
+	switch_channel_set_profile_var(member_channel, "local:cc_member_uuid", member_uuid);
+	switch_channel_set_profile_var(member_channel, "local:cc_queue", queue_name);
 
 	/* Clear flags in case previously set */
 	switch_channel_set_variable(member_channel, "cc_agent_found", NULL);
@@ -3101,8 +3117,10 @@ SWITCH_STANDARD_APP(callcenter_function)
 	/* We have a previous abandoned user, let's try to recover his place */
 	if (abandoned_epoch > 0) {
 		char res[256];
+		char *cc_queue_rejoined_epoch = switch_core_session_sprintf(member_session, "%" SWITCH_TIME_T_FMT, t_member_called);
 
-		switch_channel_set_variable_printf(member_channel, "cc_queue_rejoined_epoch", "%" SWITCH_TIME_T_FMT, t_member_called);
+		switch_channel_set_variable_printf(member_channel, "cc_queue_rejoined_epoch", cc_queue_rejoined_epoch);
+		switch_channel_set_profile_var(member_channel, "local:cc_queue_rejoined_epoch", cc_queue_rejoined_epoch);
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Member %s <%s> restoring it previous position in queue %s\n", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_name")), switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")), queue_name);
 
 		/* Update abandoned member */
@@ -3111,7 +3129,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 		cc_execute_sql(queue, sql, NULL);
 		switch_safe_free(sql);
 
-		/* Confirm we took that member in */
+		/* Confirm we took that member in and get the joined_epoch */
 		sql = switch_mprintf("SELECT joined_epoch FROM members WHERE uuid = '%q' AND session_uuid = '%q' AND state = '%q' AND queue = '%q'", member_uuid, member_session_uuid, cc_member_state2str(CC_MEMBER_STATE_WAITING), queue_name);
 		cc_execute_sql2str(NULL, NULL, sql, res, sizeof(res));
 		switch_safe_free(sql);
@@ -3122,13 +3140,17 @@ SWITCH_STANDARD_APP(callcenter_function)
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_ERROR, "Member %s <%s> restoring action failed in queue %s, joining again\n", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_name")), switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")), queue_name);
 			//queue_rwunlock(queue);
 		} else {
-
+			char *cc_queue_joined_epoch = switch_core_session_sprintf(member_session, "%" SWITCH_TIME_T_FMT, joined_epoch);
+			switch_channel_set_variable_printf(member_channel, "cc_queue_joined_epoch", cc_queue_joined_epoch);
+			switch_channel_set_profile_var(member_channel, "local:cc_queue_joined_epoch", cc_queue_joined_epoch);
 		}
 
 	} else {
 		char *strategy_str = NULL;
+		char *cc_queue_joined_epoch = switch_core_session_sprintf(member_session, "%" SWITCH_TIME_T_FMT, t_member_called);
 
-		switch_channel_set_variable_printf(member_channel, "cc_queue_joined_epoch", "%" SWITCH_TIME_T_FMT, joined_epoch);
+		switch_channel_set_variable_printf(member_channel, "cc_queue_joined_epoch", cc_queue_joined_epoch);
+		switch_channel_set_profile_var(member_channel, "local:cc_queue_joined_epoch", cc_queue_joined_epoch);
 
 		/* Add manually imported score */
 		if (cc_base_score) {
@@ -3308,6 +3330,8 @@ SWITCH_STANDARD_APP(callcenter_function)
 
 	/* Canceled for some reason */
 	if (!switch_channel_up(member_channel) || h->member_cancel_reason != CC_MEMBER_CANCEL_REASON_NONE) {
+		char * cc_queue_canceled_epoch = NULL;
+
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Member %s <%s> abandoned waiting in queue %s\n", switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_name")), switch_str_nil(switch_channel_get_variable(member_channel, "caller_id_number")), queue_name);
 
 		/* Update member state */
@@ -3339,9 +3363,13 @@ SWITCH_STANDARD_APP(callcenter_function)
 		}
 
 		/* Update some channel variables for xml_cdr needs */
-		switch_channel_set_variable_printf(member_channel, "cc_queue_canceled_epoch", "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
+		cc_queue_canceled_epoch = switch_core_session_sprintf(member_session, "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
+		switch_channel_set_variable_printf(member_channel, "cc_queue_canceled_epoch", cc_queue_canceled_epoch);
 		switch_channel_set_variable_printf(member_channel, "cc_cause", "%s", "cancel");
 		switch_channel_set_variable_printf(member_channel, "cc_cancel_reason", "%s", cc_member_cancel_reason2str(h->member_cancel_reason));
+		switch_channel_set_profile_var(member_channel, "local:cc_queue_canceled_epoch", cc_queue_canceled_epoch);
+		switch_channel_set_profile_var(member_channel, "local:cc_cause", "cancel");
+		switch_channel_set_profile_var(member_channel, "local:cc_cancel_reason", cc_member_cancel_reason2str(h->member_cancel_reason));
 
 		/* Print some debug log information */
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Member \"%s\" <%s> exit queue %s due to %s\n",
@@ -3357,6 +3385,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 
 		/* Update some channel variables for xml_cdr needs */
 		switch_channel_set_variable_printf(member_channel, "cc_cause", "%s", "answered");
+		switch_channel_set_profile_var(member_channel, "local:cc_cause", "answered");
 		if ((queue = get_queue(queue_name))) {
 			queue->calls_answered++;
 			queue_rwunlock(queue);
