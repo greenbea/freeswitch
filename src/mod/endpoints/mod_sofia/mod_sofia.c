@@ -2467,13 +2467,14 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 	case SWITCH_MESSAGE_INDICATE_RINGING:
 		{
 			switch_ring_ready_t ring_ready_val = msg->numeric_arg;
+			switch_bool_t ignore_180_after_early_media = !switch_true(switch_channel_get_variable(channel, "ignore_180_after_early_media"));
 
 			if(sofia_acknowledge_call(session) == SWITCH_STATUS_SUCCESS) {
 				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "Dialplan did not acknowledge_call; sent 100 Trying");
 			}
 
 			if (!switch_channel_test_flag(channel, CF_RING_READY) && !sofia_test_flag(tech_pvt, TFLAG_BYE) &&
-				!switch_channel_test_flag(channel, CF_EARLY_MEDIA) && !switch_channel_test_flag(channel, CF_ANSWERED)) {
+				!(switch_channel_test_flag(channel, CF_EARLY_MEDIA) && ignore_180_after_early_media) && !switch_channel_test_flag(channel, CF_ANSWERED)) {
 				char *extra_header = sofia_glue_get_extra_headers(channel, SOFIA_SIP_PROGRESS_HEADER_PREFIX);
 				const char *call_info = switch_channel_get_variable(channel, "presence_call_info_full");
 				char *cid = generate_pai_str(tech_pvt);

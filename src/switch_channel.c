@@ -3635,6 +3635,7 @@ SWITCH_DECLARE(switch_status_t) switch_channel_perform_ring_ready_value(switch_c
 {
 	switch_core_session_message_t msg = { 0 };
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
+	switch_bool_t ignore_180_after_early_media = !switch_true(switch_channel_get_variable(channel, "ignore_180_after_early_media"));
 
 	switch_assert(channel != NULL);
 
@@ -3646,7 +3647,7 @@ SWITCH_DECLARE(switch_status_t) switch_channel_perform_ring_ready_value(switch_c
 		return SWITCH_STATUS_SUCCESS;
 	}
 
-	if (switch_channel_test_flag(channel, CF_EARLY_MEDIA)) {
+	if (switch_channel_test_flag(channel, CF_EARLY_MEDIA) && ignore_180_after_early_media) {
 		return SWITCH_STATUS_SUCCESS;
 	}
 

@@ -7601,7 +7601,7 @@ static void sofia_handle_sip_i_state(switch_core_session_t *session, int status,
 
 		switch (status) {
 		case 180:
-			switch_channel_mark_ring_ready(channel);
+			switch_channel_ring_ready(channel);
 			break;
 		case 182:
 			switch_channel_mark_ring_ready_value(channel, SWITCH_RING_READY_QUEUED);
