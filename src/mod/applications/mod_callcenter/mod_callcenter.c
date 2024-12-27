@@ -1841,6 +1841,10 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 								switch_channel_set_variable(agent_channel, "cc_agent_type", h->agent_type);
 								switch_channel_set_variable(agent_channel, "cc_member_uuid", h->member_uuid);
 								switch_channel_set_variable(agent_channel, "cc_member_session_uuid", h->member_session_uuid);
+								switch_channel_set_variable(agent_channel, "cc_queue_joined_epoch", h->member_joined_epoch);
+								if (atoi(h->member_rejoined_epoch) > 0) {
+									switch_channel_set_variable(agent_channel, "cc_queue_rejoined_epoch", h->member_rejoined_epoch);
+								}
 
 								switch_channel_process_export(member_channel, agent_channel, NULL, "cc_export_vars");
 
