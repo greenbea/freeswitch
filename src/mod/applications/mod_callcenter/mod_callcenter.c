@@ -1968,6 +1968,8 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			switch_event_fire(&event);
 		}
 
+		switch_channel_execute_on(member_channel, "execute_on_agent_bridge_start");
+
 		/* Record session if record-template is provided */
 		if (h->record_template) {
 			char *expanded = switch_channel_expand_variables(member_channel, h->record_template);
@@ -2101,6 +2103,8 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			switch_event_fire(&event);
 		}
 		if (bridged) {
+			switch_channel_execute_on(member_channel, "execute_on_agent_bridge_end");
+			
 			/* for xml_cdr needs */
 			switch_channel_set_variable_printf(member_channel, "cc_queue_terminated_epoch", "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
 
