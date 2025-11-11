@@ -2147,6 +2147,8 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 											   h->member_cid_number);
 				switch_event_fire(&event);
 			}
+
+			switch_channel_execute_on(member_channel, "execute_on_member_queue_end");
 		}
 
 	} else {
@@ -3214,6 +3216,8 @@ SWITCH_STANDARD_APP(callcenter_function)
 		switch_event_fire(&event);
 	}
 
+	switch_channel_execute_on(member_channel, "cc_member_queue_start");
+
 	/* Send Event with queue count */
 	cc_queue_count(queue_name);
 	cc_send_presence(queue_name, NULL);
@@ -3378,6 +3382,8 @@ SWITCH_STANDARD_APP(callcenter_function)
 		switch_channel_set_profile_var(member_channel, "local:cc_queue_canceled_epoch", cc_queue_canceled_epoch);
 		switch_channel_set_profile_var(member_channel, "local:cc_cause", "cancel");
 		switch_channel_set_profile_var(member_channel, "local:cc_cancel_reason", cc_member_cancel_reason2str(h->member_cancel_reason));
+
+		switch_channel_execute_on(member_channel, "cc_member_queue_end");
 
 		/* Print some debug log information */
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Member \"%s\" <%s> exit queue %s due to %s\n",
