@@ -1916,6 +1916,7 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 		switch_channel_t *member_channel = switch_core_session_get_channel(member_session);
 		switch_channel_t *agent_channel = switch_core_session_get_channel(agent_session);
 		const char *o_announce = NULL;
+		const char *execute_on_member_queue_bridge_end = NULL;
 
 		switch_channel_set_variable(agent_channel, "cc_member_pre_answer_uuid", NULL);
 
@@ -1968,7 +1969,7 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			switch_event_fire(&event);
 		}
 
-		switch_channel_execute_on(member_channel, "execute_on_agent_bridge_start");
+		switch_channel_execute_on(agent_channel, "execute_on_member_queue_bridge_start");
 
 		/* Record session if record-template is provided */
 		if (h->record_template) {
@@ -1993,6 +1994,11 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 
 		if (switch_true(switch_channel_get_variable(member_channel, SWITCH_BYPASS_MEDIA_AFTER_BRIDGE_VARIABLE)) || switch_true(switch_channel_get_variable(agent_channel, SWITCH_BYPASS_MEDIA_AFTER_BRIDGE_VARIABLE))) {
 			switch_channel_set_flag(member_channel, CF_BYPASS_MEDIA_AFTER_BRIDGE);
+		}
+
+		// we cannot use the regular switch_channel_execute_on because lua scripts will not the session initialized after hangup state
+		if ((execute_on_member_queue_bridge_end = switch_channel_get_variable(member_channel, "execute_on_member_queue_bridge_end")) && !zstr(execute_on_member_queue_bridge_end)) {
+			switch_channel_set_variable(member_channel, "execute_on_post_bridge_mod_callcenter", execute_on_member_queue_bridge_end);
 		}
 
 		if (switch_ivr_uuid_bridge(h->member_session_uuid, switch_core_session_get_uuid(agent_session)) != SWITCH_STATUS_SUCCESS) {
@@ -2103,8 +2109,8 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			switch_event_fire(&event);
 		}
 		if (bridged) {
-			switch_channel_execute_on(member_channel, "execute_on_agent_bridge_end");
-			
+			switch_channel_set_variable(member_channel, "execute_on_post_bridge_mod_callcenter", NULL);
+
 			/* for xml_cdr needs */
 			switch_channel_set_variable_printf(member_channel, "cc_queue_terminated_epoch", "%" SWITCH_TIME_T_FMT, local_epoch_time_now(NULL));
 
@@ -2147,8 +2153,6 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 											   h->member_cid_number);
 				switch_event_fire(&event);
 			}
-
-			switch_channel_execute_on(member_channel, "execute_on_member_queue_end");
 		}
 
 	} else {
@@ -3216,8 +3220,6 @@ SWITCH_STANDARD_APP(callcenter_function)
 		switch_event_fire(&event);
 	}
 
-	switch_channel_execute_on(member_channel, "cc_member_queue_start");
-
 	/* Send Event with queue count */
 	cc_queue_count(queue_name);
 	cc_send_presence(queue_name, NULL);
@@ -3383,7 +3385,7 @@ SWITCH_STANDARD_APP(callcenter_function)
 		switch_channel_set_profile_var(member_channel, "local:cc_cause", "cancel");
 		switch_channel_set_profile_var(member_channel, "local:cc_cancel_reason", cc_member_cancel_reason2str(h->member_cancel_reason));
 
-		switch_channel_execute_on(member_channel, "cc_member_queue_end");
+		switch_channel_execute_on(member_channel, "execute_on_member_queue_cancel");
 
 		/* Print some debug log information */
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Member \"%s\" <%s> exit queue %s due to %s\n",
