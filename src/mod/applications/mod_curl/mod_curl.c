@@ -341,7 +341,7 @@ static char *print_json(switch_memory_pool_t *pool, http_data_t *http_data)
 		goto curl_json_output_end;
 	}
 
-	switch_snprintf(tmp, sizeof(tmp), "%ld", http_data->exit_code);
+	switch_snprintf(tmp, sizeof(tmp), "%d", http_data->exit_code);
 	cJSON_AddItemToObject(top, "exit_code", cJSON_CreateString(tmp));
 	switch_snprintf(tmp, sizeof(tmp), "%ld", http_data->http_response_code);
 	cJSON_AddItemToObject(top, "status_code", cJSON_CreateString(tmp));
