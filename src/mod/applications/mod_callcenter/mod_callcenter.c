@@ -1969,7 +1969,7 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			switch_event_fire(&event);
 		}
 
-		switch_channel_execute_on(agent_channel, "execute_on_member_queue_bridge_start");
+		switch_channel_execute_on(member_channel, "execute_on_member_queue_bridge_start");
 
 		/* Record session if record-template is provided */
 		if (h->record_template) {
@@ -1996,7 +1996,7 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			switch_channel_set_flag(member_channel, CF_BYPASS_MEDIA_AFTER_BRIDGE);
 		}
 
-		// we cannot use the regular switch_channel_execute_on because lua scripts will not the session initialized after hangup state
+		// we cannot use the regular switch_channel_execute_on because not all applications properly work if the channel is already hung up (zombie exec)
 		if ((execute_on_member_queue_bridge_end = switch_channel_get_variable(member_channel, "execute_on_member_queue_bridge_end")) && !zstr(execute_on_member_queue_bridge_end)) {
 			switch_channel_set_variable(member_channel, "execute_on_post_bridge_mod_callcenter", execute_on_member_queue_bridge_end);
 		}
