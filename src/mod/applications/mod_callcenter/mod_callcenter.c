@@ -1969,8 +1969,6 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			switch_event_fire(&event);
 		}
 
-		switch_channel_execute_on(member_channel, "execute_on_member_queue_bridge_start");
-
 		/* Record session if record-template is provided */
 		if (h->record_template) {
 			char *expanded = switch_channel_expand_variables(member_channel, h->record_template);
@@ -2070,6 +2068,7 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			/* Change the agents Status in the tiers */
 			cc_tier_update("state", cc_tier_state2str(CC_TIER_STATE_ACTIVE_INBOUND), h->queue_name, h->agent_name);
 			cc_agent_update("state", cc_agent_state2str(CC_AGENT_STATE_IN_A_QUEUE_CALL), h->agent_name);
+			switch_channel_execute_on(member_channel, "execute_on_member_queue_bridge_start");
 
 		}
 		switch_channel_clear_app_flag_key(CC_APP_KEY, member_channel, CC_APP_AGENT_CONNECTING);
