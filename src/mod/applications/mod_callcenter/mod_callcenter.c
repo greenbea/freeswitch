@@ -86,7 +86,8 @@ typedef enum {
 	CC_TIER_STATE_READY = 2,
 	CC_TIER_STATE_OFFERING = 3,
 	CC_TIER_STATE_ACTIVE_INBOUND = 4,
-	CC_TIER_STATE_STANDBY = 5
+	CC_TIER_STATE_STANDBY = 5,
+	CC_TIER_STATE_LOGGED_OUT = 6
 } cc_tier_state_t;
 
 static struct cc_state_table STATE_CHART[] = {
@@ -96,6 +97,7 @@ static struct cc_state_table STATE_CHART[] = {
 	{"Offering", CC_TIER_STATE_OFFERING},
 	{"Active Inbound", CC_TIER_STATE_ACTIVE_INBOUND},
 	{"Standby", CC_TIER_STATE_STANDBY},
+	{"Logged Out", CC_TIER_STATE_LOGGED_OUT},
 	{NULL, 0}
 
 };
@@ -1221,7 +1223,7 @@ cc_status_t cc_tier_add(const char *queue_name, const char *agent, const char *s
 		}
 
 		/* Add Agent in tier */
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Adding Tier on Queue %s for Agent %s, level %d, position %d\n", queue_name, agent, level, position);
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Adding Tier on Queue %s for Agent %s, level %d, position %d, state %s\n", queue_name, agent, level, position, state);
 		sql = switch_mprintf("INSERT INTO tiers (queue, agent, state, level, position) VALUES('%q', '%q', '%q', '%d', '%d');",
 				queue_name, agent, state, level, position);
 		cc_execute_sql(NULL, sql, NULL);
@@ -1273,11 +1275,38 @@ cc_status_t cc_tier_update(const char *key, const char *value, const char *queue
 	}
 
 	if (!strcasecmp(key, "state")) {
+		switch_bool_t islogin = SWITCH_FALSE;
+
+		if (!strcasecmp(value, "Login")) {
+			islogin = SWITCH_TRUE;
+			value = cc_tier_state2str(CC_TIER_STATE_READY);
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Updating tier to %s only if agent is logged out\n", value);
+		}
+
 		if (cc_tier_str2state(value) != CC_TIER_STATE_UNKNOWN) {
-			sql = switch_mprintf("UPDATE tiers SET state = '%q' WHERE queue = '%q' AND agent = '%q'", value, queue_name, agent);
-			cc_execute_sql(NULL, sql, NULL);
+			static int res = 0;
+			char *sql_where = islogin ? switch_mprintf("AND state = '%q'", cc_tier_state2str(CC_TIER_STATE_LOGGED_OUT)) : "";
+			sql = switch_mprintf("UPDATE tiers SET state = '%q' WHERE queue = '%q' AND agent = '%q' %s", value,  queue_name, agent, sql_where);
+			res = cc_execute_sql_affected_rows(sql);
 			switch_safe_free(sql);
+
+			if (islogin) {
+				switch_safe_free(sql_where);
+			}
+
 			result = CC_STATUS_SUCCESS;
+
+			if (res > 0 && (islogin || !strcasecmp(value, cc_tier_state2str(CC_TIER_STATE_LOGGED_OUT)))) {
+				switch_event_t *event = NULL;
+
+				if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, CALLCENTER_EVENT) == SWITCH_STATUS_SUCCESS) {
+					switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Agent", agent);
+					switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Action", "agent-tier-state-change");
+					switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "CC-Tier", queue_name);
+					switch_event_add_header(event, SWITCH_STACK_BOTTOM, "CC-Tier-State", "%s", value);
+					switch_event_fire(&event);
+				}
+			}
 		} else {
 			result = CC_STATUS_TIER_INVALID_STATE;
 			goto done;
@@ -1303,6 +1332,49 @@ done:
 	if (result == CC_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Updated tier: Agent %s in Queue %s set %s = %s\n", agent, queue_name, key, value);
 	}
+	return result;
+}
+
+cc_status_t cc_tier_get(const char *key, const char *queue_name, const char *agent, char *ret_result, size_t ret_result_size)
+{
+	cc_status_t result = CC_STATUS_SUCCESS;
+	char *sql;
+	char res[256];
+
+	/* Check to see if tier already exists */
+	sql = switch_mprintf("SELECT count(*) FROM tiers WHERE agent = '%q' AND queue = '%q'", agent, queue_name);
+	cc_execute_sql2str(NULL, NULL, sql, res, sizeof(res));
+	switch_safe_free(sql);
+
+	if (atoi(res) == 0) {
+		result = CC_STATUS_TIER_NOT_FOUND;
+		goto done;
+	}
+
+	if (!strcasecmp(key, "state")) {
+		sql = switch_mprintf("SELECT state FROM tiers WHERE queue = '%q' AND agent = '%q'", queue_name, agent);
+		cc_execute_sql2str(NULL, NULL, sql, res, sizeof(res));
+		switch_safe_free(sql);
+		switch_snprintf(ret_result, ret_result_size, "%s", res);
+		result = CC_STATUS_SUCCESS;
+	} else if (!strcasecmp(key, "level")) {
+		sql = switch_mprintf("SELECT level FROM tiers WHERE queue = '%q' AND agent = '%q'", queue_name, agent);
+		cc_execute_sql2str(NULL, NULL, sql, res, sizeof(res));
+		switch_safe_free(sql);
+		switch_snprintf(ret_result, ret_result_size, "%s", res);
+		result = CC_STATUS_SUCCESS;
+	} else if (!strcasecmp(key, "position")) {
+		sql = switch_mprintf("SELECT position FROM tiers WHERE queue = '%q' AND agent = '%q'", queue_name, agent);
+		cc_execute_sql2str(NULL, NULL, sql, res, sizeof(res));
+		switch_safe_free(sql);
+		switch_snprintf(ret_result, ret_result_size, "%s", res);
+		result = CC_STATUS_SUCCESS;
+	} else {
+		result = CC_STATUS_INVALID_KEY;
+		goto done;
+	}
+
+done:
 	return result;
 }
 
@@ -1390,19 +1462,25 @@ end:
 	return SWITCH_STATUS_SUCCESS;
 }
 
-static switch_status_t load_tier(const char *queue, const char *agent, const char *level, const char *position)
+static switch_status_t load_tier(const char *queue, const char *agent, const char *level, const char *position, switch_bool_t initial_logged_out)
 {
+	cc_tier_state_t initial_state = CC_TIER_STATE_READY;
+
+	if (initial_logged_out) {
+		initial_state = CC_TIER_STATE_LOGGED_OUT;
+	}
+		
 	/* Hack to check if an tier already exist */
 	if (cc_tier_update("unknown", "unknown", queue, agent) == CC_STATUS_TIER_NOT_FOUND) {
 			if (!zstr(level) && !zstr(position)) {
-				cc_tier_add(queue, agent, cc_tier_state2str(CC_TIER_STATE_READY), atoi(level), atoi(position));
+				cc_tier_add(queue, agent, cc_tier_state2str(initial_state), atoi(level), atoi(position));
 			} else if (!zstr(level) && zstr(position)) {
-				cc_tier_add(queue, agent, cc_tier_state2str(CC_TIER_STATE_READY), atoi(level), 1);
+				cc_tier_add(queue, agent, cc_tier_state2str(initial_state), atoi(level), 1);
 			} else if (zstr(level) && !zstr(position)) {
-				cc_tier_add(queue, agent, cc_tier_state2str(CC_TIER_STATE_READY), 1, atoi(position));
+				cc_tier_add(queue, agent, cc_tier_state2str(initial_state), 1, atoi(position));
 			} else {
 				/* default to level 1 and position 1 within the level */
-				cc_tier_add(queue, agent, cc_tier_state2str(CC_TIER_STATE_READY), 1, 1);
+				cc_tier_add(queue, agent, cc_tier_state2str(initial_state), 1, 1);
 			}
 	} else {
 		if (!zstr(level)) {
@@ -1444,14 +1522,16 @@ static switch_status_t load_tiers(switch_bool_t load_all, const char *queue_name
 		const char *queue = switch_xml_attr(x_tier, "queue");
 		const char *level = switch_xml_attr(x_tier, "level");
 		const char *position = switch_xml_attr(x_tier, "position");
+		switch_bool_t initial_logged_out = switch_true(switch_xml_attr(x_tier, "initial-logged-out"));
+
 		if (load_all == SWITCH_TRUE) {
-			result = load_tier(queue, agent, level, position);
+			result = load_tier(queue, agent, level, position, initial_logged_out);
 		} else if (!zstr(agent_name) && !zstr(queue_name) && !strcasecmp(agent, agent_name) && !strcasecmp(queue, queue_name)) {
-			result = load_tier(queue, agent, level, position);
+			result = load_tier(queue, agent, level, position, initial_logged_out);
 		} else if (zstr(agent_name) && !strcasecmp(queue, queue_name)) {
-			result = load_tier(queue, agent, level, position);
+			result = load_tier(queue, agent, level, position, initial_logged_out);
 		} else if (zstr(queue_name) && !strcasecmp(agent, agent_name)) {
-			result = load_tier(queue, agent, level, position);
+			result = load_tier(queue, agent, level, position, initial_logged_out);
 		}
 	}
 
@@ -3623,6 +3703,7 @@ static int list_result_json_callback(void *pArg, int argc, char **argv, char **c
 "\tcallcenter_config tier set level [queue_name] [agent_name] [level] | \n" \
 "\tcallcenter_config tier set position [queue_name] [agent_name] [position] | \n" \
 "\tcallcenter_config tier del [queue_name] [agent_name] | \n" \
+"\tcallcenter_config tier get state [queue_name] [agent_name] | \n" \
 "\tcallcenter_config tier reload [queue_name] [agent_name] | \n" \
 "\tcallcenter_config tier list | \n" \
 "\tcallcenter_config queue load [queue_name] | \n" \
@@ -3842,6 +3923,31 @@ SWITCH_STANDARD_API(cc_config_api_function)
 						goto done;
 					case CC_STATUS_TIER_ALREADY_EXIST:
 						stream->write_function(stream, "%s", "-ERR Tier already exist!\n");
+						goto done;
+					default:
+						stream->write_function(stream, "%s", "-ERR Unknown Error!\n");
+						goto done;
+				}
+			}
+
+		} else if (action && !strcasecmp(action, "get")) {
+			if (argc-initial_argc < 3) {
+				stream->write_function(stream, "%s", "-ERR Invalid!\n");
+				goto done;
+			} else {
+				const char *key = argv[0 + initial_argc];
+				const char *queue_name = argv[1 + initial_argc];
+				const char *agent = argv[2 + initial_argc];
+				char ret[64];
+				switch (cc_tier_get(key, queue_name, agent, ret, sizeof(ret))) {
+					case CC_STATUS_SUCCESS:
+						stream->write_function(stream, "%s", ret);
+						break;
+					case CC_STATUS_INVALID_KEY:
+						stream->write_function(stream, "%s", "-ERR Invalid Tier Get KEY!\n");
+						goto done;
+					case CC_STATUS_TIER_NOT_FOUND:
+						stream->write_function(stream, "%s", "-ERR Tier not found!\n");
 						goto done;
 					default:
 						stream->write_function(stream, "%s", "-ERR Unknown Error!\n");
@@ -4396,6 +4502,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_callcenter_load)
 
 	switch_console_set_complete("add callcenter_config tier add");
 	switch_console_set_complete("add callcenter_config tier del");
+	switch_console_set_complete("add callcenter_config tier get state");
 	switch_console_set_complete("add callcenter_config tier reload");
 	switch_console_set_complete("add callcenter_config tier set state");
 	switch_console_set_complete("add callcenter_config tier set level");
