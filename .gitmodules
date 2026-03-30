@@ -1,0 +1,3 @@
+[submodule "src/mod/applications/mod_dataphone_utils"]
+	path = src/mod/applications/mod_dataphone_utils
+	url = git@github.com:Data-Phone/mod_dataphone_utils.git
