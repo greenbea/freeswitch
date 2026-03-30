@@ -105,7 +105,8 @@ typedef enum {
 	CC_AGENT_STATUS_LOGGED_OUT = 1,
 	CC_AGENT_STATUS_AVAILABLE = 2,
 	CC_AGENT_STATUS_AVAILABLE_ON_DEMAND = 3,
-	CC_AGENT_STATUS_ON_BREAK = 4
+	CC_AGENT_STATUS_ON_BREAK = 4,
+	CC_AGENT_STATUS_OFFLINE = 5
 } cc_agent_status_t;
 
 static struct cc_status_table AGENT_STATUS_CHART[] = {
@@ -114,6 +115,7 @@ static struct cc_status_table AGENT_STATUS_CHART[] = {
 	{"Available", CC_AGENT_STATUS_AVAILABLE},
 	{"Available (On Demand)", CC_AGENT_STATUS_AVAILABLE_ON_DEMAND},
 	{"On Break", CC_AGENT_STATUS_ON_BREAK},
+	{ "Offline", CC_AGENT_STATUS_OFFLINE },
 	{NULL, 0}
 
 };
@@ -1777,6 +1779,11 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 		switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "loopback_bowout_on_execute", "false");
 		switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "ignore_early_media", "true");
 
+		if (strcasecmp( h->agent_status, cc_agent_status2str(CC_AGENT_STATUS_OFFLINE) ) == 0) {
+			// we have no other way to update this besides using this ugly execute on workaround. Maybe we can add a new execute on that takes a callback function and parameters to execute it?
+			switch_event_add_header(ovars, SWITCH_STACK_BOTTOM, "api_on_ring_offline_agent", "callcenter_config agent set status %s 'Available'", h->agent_name); 
+		}
+
 		switch_channel_process_export(member_channel, NULL, ovars, "cc_export_vars");
 
 		t_agent_called = local_epoch_time_now(NULL);
@@ -2186,6 +2193,8 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 			/* Protection againts super fast loop due to unregistrer */
 			case SWITCH_CAUSE_USER_NOT_REGISTERED:
 				delay_next_agent_call = 30;
+				// mark as offline tso they're included in the no agent timeout timer
+				cc_agent_update("status", cc_agent_status2str(CC_AGENT_STATUS_OFFLINE), h->agent_name);
 				break;
 			/* No answer: Destination does not answer for some other reason */
 			default:
@@ -2331,7 +2340,11 @@ static int agents_callback(void *pArg, int argc, char **argv, char **columnNames
 
 	switch_bool_t contact_agent = SWITCH_TRUE;
 
-	cbt->agent_found = SWITCH_TRUE;
+	// if agent is offline we still want to continue in case they're back online, however, we do not mark them as found
+	if (strcasecmp(agent_status, cc_agent_status2str(CC_AGENT_STATUS_OFFLINE)) != 0) {
+		cbt->agent_found = SWITCH_TRUE;
+	}
+
 
 	/* Check if we switch to a different tier, if so, check if we should continue further for that member */
 
@@ -2665,40 +2678,40 @@ static int members_callback(void *pArg, int argc, char **argv, char **columnName
 
 		sql = switch_mprintf("SELECT instance_id, name, status, contact, no_answer_count, max_no_answer, reject_delay_time, busy_delay_time, no_answer_delay_time, tiers.state, agents.last_bridge_end, agents.wrap_up_time, agents.state, agents.ready_time, tiers.position as tiers_position, tiers.level as tiers_level, agents.type, agents.uuid, external_calls_count, agents.last_offered_call as agents_last_offered_call, 1 as dyn_order FROM agents LEFT JOIN tiers ON (agents.name = tiers.agent)"
 				" WHERE tiers.queue = '%q'"
-				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
+				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
 				" AND tiers.position > %d"
 				" AND tiers.level = %d"
 				" UNION "
 				"SELECT instance_id, name, status, contact, no_answer_count, max_no_answer, reject_delay_time, busy_delay_time, no_answer_delay_time, tiers.state, agents.last_bridge_end, agents.wrap_up_time, agents.state, agents.ready_time, tiers.position as tiers_position, tiers.level as tiers_level, agents.type, agents.uuid, external_calls_count, agents.last_offered_call as agents_last_offered_call, 2 as dyn_order FROM agents LEFT JOIN tiers ON (agents.name = tiers.agent)"
 				" WHERE tiers.queue = '%q'"
-				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
+				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
 				" AND tiers.level > %d"
 				" ORDER BY dyn_order asc, tiers_level, tiers_position, agents_last_offered_call",
 				queue_name,
-				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND),
+				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND), cc_agent_status2str(CC_AGENT_STATUS_OFFLINE),
 				position,
 				level,
 				queue_name,
-				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND),
+				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND), cc_agent_status2str(CC_AGENT_STATUS_OFFLINE),
 				level
 				);
 	} else if (!strcasecmp(queue->strategy, "round-robin")) {
 		sql = switch_mprintf("SELECT instance_id, name, status, contact, no_answer_count, max_no_answer, reject_delay_time, busy_delay_time, no_answer_delay_time, tiers.state, agents.last_bridge_end, agents.wrap_up_time, agents.state, agents.ready_time, tiers.position as tiers_position, tiers.level as tiers_level, agents.type, agents.uuid, external_calls_count, agents.last_offered_call as agents_last_offered_call, 1 as dyn_order FROM agents LEFT JOIN tiers ON (agents.name = tiers.agent)"
 				" WHERE tiers.queue = '%q'"
-				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
+				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
 				" AND tiers.position > (SELECT tiers.position FROM agents LEFT JOIN tiers ON (agents.name = tiers.agent) WHERE tiers.queue = '%q' AND agents.last_offered_call > 0 ORDER BY agents.last_offered_call DESC LIMIT 1)"
 				" AND tiers.level = (SELECT tiers.level FROM agents LEFT JOIN tiers ON (agents.name = tiers.agent) WHERE tiers.queue = '%q' AND agents.last_offered_call > 0 ORDER BY agents.last_offered_call DESC LIMIT 1)"
 				" UNION "
 				"SELECT instance_id, name, status, contact, no_answer_count, max_no_answer, reject_delay_time, busy_delay_time, no_answer_delay_time, tiers.state, agents.last_bridge_end, agents.wrap_up_time, agents.state, agents.ready_time, tiers.position as tiers_position, tiers.level as tiers_level, agents.type, agents.uuid, external_calls_count, agents.last_offered_call as agents_last_offered_call, 2 as dyn_order FROM agents LEFT JOIN tiers ON (agents.name = tiers.agent)"
 				" WHERE tiers.queue = '%q'"
-				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
+				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
 				" ORDER BY dyn_order asc, tiers_level, tiers_position, agents_last_offered_call",
 				queue_name,
-				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND),
+				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND), cc_agent_status2str(CC_AGENT_STATUS_OFFLINE),
 				queue_name,
 				queue_name,
 				queue_name,
-				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND)
+				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND), cc_agent_status2str(CC_AGENT_STATUS_OFFLINE)
 				);
 
 	} else {
@@ -2726,10 +2739,10 @@ static int members_callback(void *pArg, int argc, char **argv, char **columnName
 
 		sql = switch_mprintf("SELECT instance_id, name, status, contact, no_answer_count, max_no_answer, reject_delay_time, busy_delay_time, no_answer_delay_time, tiers.state, agents.last_bridge_end, agents.wrap_up_time, agents.state, agents.ready_time, tiers.position, tiers.level, agents.type, agents.uuid, external_calls_count FROM agents LEFT JOIN tiers ON (agents.name = tiers.agent)"
 				" WHERE tiers.queue = '%q'"
-				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
+				" AND (agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q' OR agents.status = '%q')"
 				" ORDER BY %q",
 				queue_name,
-				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND),
+				cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE), cc_agent_status2str(CC_AGENT_STATUS_ON_BREAK), cc_agent_status2str(CC_AGENT_STATUS_AVAILABLE_ON_DEMAND), cc_agent_status2str(CC_AGENT_STATUS_OFFLINE),
 				sql_order_by);
 		switch_safe_free(sql_order_by);
 
