@@ -1688,6 +1688,18 @@ static switch_status_t playback_array(switch_core_session_t *session, const char
 	return status;
 }
 
+static void cc_queue_mark_agent_exist(const char *queue_name)
+{
+	cc_queue_t *queue = NULL;
+
+	if (!queue_name || !(queue = get_queue(queue_name))) {
+		return;
+	}
+
+	queue->last_agent_exist = local_epoch_time_now(NULL);
+	queue_rwunlock(queue);
+}
+
 static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *thread, void *obj)
 {
 	struct call_helper *h = (struct call_helper *) obj;
@@ -1907,6 +1919,10 @@ static void *SWITCH_THREAD_FUNC outbound_agent_thread_run(switch_thread_t *threa
 	} else {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(member_session), SWITCH_LOG_DEBUG, "Invalid agent type '%s' for agent '%s', aborting member offering", h->agent_type, h->agent_name);
 		cause = SWITCH_CAUSE_USER_NOT_REGISTERED;
+	}
+
+	if (status == SWITCH_STATUS_SUCCESS || (cause != SWITCH_CAUSE_USER_NOT_REGISTERED && cause != SWITCH_CAUSE_NONE)) {
+		cc_queue_mark_agent_exist(h->queue_name);
 	}
 
 	/* Originate/Bridge is not finished, processing the return value */
@@ -2763,18 +2779,14 @@ static int members_callback(void *pArg, int argc, char **argv, char **columnName
 		goto end;
 	} else {
 		queue->last_agent_exist_check = local_epoch_time_now(NULL);
-		if (cbt.agent_found) {
-			queue->last_agent_exist = queue->last_agent_exist_check;
-		} else {
-			/* If no agent found in top-down mode, restart to the begining */
-			if (!strcasecmp(queue->strategy, "top-down")) {
-				switch_core_session_t *member_session = switch_core_session_locate(cbt.member_session_uuid);
-				if (member_session) {
-					switch_channel_t *member_channel = switch_core_session_get_channel(member_session);
-					switch_channel_set_variable(member_channel, "cc_last_agent_tier_position", NULL);
-					switch_channel_set_variable(member_channel, "cc_last_agent_tier_level", NULL);
-					switch_core_session_rwunlock(member_session);
-				}
+		/* If no agent found in top-down mode, restart to the begining */
+		if (!cbt.agent_found && !strcasecmp(queue->strategy, "top-down")) {
+			switch_core_session_t *member_session = switch_core_session_locate(cbt.member_session_uuid);
+			if (member_session) {
+				switch_channel_t *member_channel = switch_core_session_get_channel(member_session);
+				switch_channel_set_variable(member_channel, "cc_last_agent_tier_position", NULL);
+				switch_channel_set_variable(member_channel, "cc_last_agent_tier_level", NULL);
+				switch_core_session_rwunlock(member_session);
 			}
 		}
 		queue_rwunlock(queue);
